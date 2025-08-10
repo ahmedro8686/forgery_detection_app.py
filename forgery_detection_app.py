@@ -38,7 +38,6 @@ def dct_noise_map(y_channel):
     noise_map = cv2.resize(high_freq, (w, h))
     noise_norm = cv2.normalize(noise_map, None, 0, 1, cv2.NORM_MINMAX)
     return noise_norm
-
 if uploaded_file is not None:
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
@@ -89,8 +88,15 @@ if uploaded_file is not None:
     regions = regionprops(labeled)
 
     # Heatmap and Overlay
-    heatmap = cm.jet(np.clip(z_map, 0, None))[:, :, :3]
-    overlay = cv2.addWeighted(img_rgb.astype(np.float32)/255.0, 0.6, heatmap, 0.4, 0)
+    heatmap = cm.jet(np.clip(z_map, 0, None))[:, :, :3]  # نأخذ 3 قنوات فقط (RGB)
+    heatmap = (heatmap * 255).astype(np.uint8)            # نحول لقيم 0-255
+    heatmap = cv2.resize(heatmap, (img_rgb.shape[1], img_rgb.shape[0]))  # نعيد تحجيمه
+
+    overlay = cv2.addWeighted(img_rgb.astype(np.float32) / 255.0,
+                              0.6,
+                              heatmap.astype(np.float32) / 255.0,
+                              0.4,
+                              0)
 
     # عرض النتائج
     st.subheader("Original Image")
@@ -119,5 +125,3 @@ if uploaded_file is not None:
     cv2.imwrite("anomaly_result.png", result_bgr)
     with open("anomaly_result.png", "rb") as file:
         st.download_button("Download Result Image", file, "anomaly_result.png")
-
-
