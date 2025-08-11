@@ -1,4 +1,3 @@
-#app.py
 import streamlit as st
 import numpy as np
 import cv2
@@ -14,7 +13,6 @@ def load_image_from_upload(ufile):
     img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
     if img_bgr is None:
         raise ValueError("Cannot decode image")
-    # If 4 channels (RGBA), convert to RGB dropping alpha
     if img_bgr.ndim == 2:
         img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
     if img_bgr.shape[2] == 4:
@@ -23,22 +21,17 @@ def load_image_from_upload(ufile):
     return img_rgb
 
 def resize_max_dim(img, max_dim):
-    print(f"type(img): {type(img)}")
     if img is None:
         raise ValueError("Image is None")
     if not hasattr(img, "shape"):
         raise ValueError("Image has no shape attribute")
     h, w = img.shape[:2]
-    print(f"h: {h}, w: {w}")
     scale = min(max_dim / max(h, w), 1.0)
-    print(f"scale: {scale}")
     if scale < 1.0:
         img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     return img
 
-
 def compute_ela(img_rgb, quality=90):
-    # ELA: recompress to JPEG and take absolute difference
     img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
     success, encimg = cv2.imencode('.jpg', img_bgr, encode_param)
@@ -47,14 +40,12 @@ def compute_ela(img_rgb, quality=90):
     decimg = cv2.imdecode(encimg, cv2.IMREAD_COLOR)
     dec_rgb = cv2.cvtColor(decimg, cv2.COLOR_BGR2RGB)
     diff = cv2.absdiff(img_rgb, dec_rgb).astype(np.float32)
-    diff_gray = np.mean(diff, axis=2)  # grayscale diff
-    # amplify and normalize
+    diff_gray = np.mean(diff, axis=2)
     maxv = diff_gray.max() if diff_gray.max() > 0 else 1.0
     ela_norm = diff_gray / maxv
     return ela_norm
 
 def compute_edge_map(img_gray):
-    # median-based thresholds for Canny
     v = np.median(img_gray)
     lower = int(max(0, 0.66 * v))
     upper = int(min(255, 1.33 * v))
@@ -63,7 +54,6 @@ def compute_edge_map(img_gray):
     return edges
 
 def compute_lbp(img_gray):
-    # basic LBP, radius=1, 8 neighbors
     img = img_gray.astype(np.float32)
     h, w = img.shape
     padded = cv2.copyMakeBorder(img, 1,1,1,1, cv2.BORDER_REFLECT)
@@ -76,57 +66,47 @@ def compute_lbp(img_gray):
     ]
     for i, nb in enumerate(neighbors):
         bits[..., i] = (nb >= center).astype(np.uint8)
-    powers = (1 << np.arange(8)).astype(np.uint8)  # 1,2,4,...
-    lbp = np.sum(bits * powers[::-1], axis=2)  # reversed to give conventional orientation
+    powers = (1 << np.arange(8)).astype(np.uint8)
+    lbp = np.sum(bits * powers[::-1], axis=2)
     lbp_norm = lbp.astype(np.float32) / 255.0
     return lbp_norm
 
 def compute_dct_highfreq(img_gray, keep_low=16):
-    # compute DCT of whole image and zero-out low frequencies => inverse => high-frequency map
     img_f = img_gray.astype(np.float32) / 255.0
-    # ensure float32
-    # pad to even size for stable dct if needed
     h, w = img_f.shape
-    # apply dct
     try:
         dct = cv2.dct(img_f)
         mask = np.ones_like(dct)
-        mask[:keep_low, :keep_low] = 0  # zero low-frequency block -> keep high-freq
+        mask[:keep_low, :keep_low] = 0
         dct_high = dct * mask
         idct = cv2.idct(dct_high)
         high = np.abs(idct)
-        # normalize
         maxv = high.max() if high.max() > 0 else 1.0
         return high / maxv
     except Exception:
-        # fallback: use laplacian as proxy
         lap = cv2.Laplacian(img_gray, cv2.CV_32F)
         lap = np.abs(lap)
         maxv = lap.max() if lap.max() > 0 else 1.0
         return lap / maxv
 
 def combine_zscore_map(edges, lbp, noise):
-    # stack and compute per-pixel z-score magnitude across feature channels
     stack = np.stack([edges, lbp, noise], axis=2).astype(np.float32)
     mu = np.mean(stack, axis=2, keepdims=True)
     sigma = np.std(stack, axis=2, keepdims=True) + 1e-8
     z = (stack - mu) / sigma
-    anomaly = np.mean(np.abs(z), axis=2)  # average absolute z across channels
-    # normalize to 0-1
+    anomaly = np.mean(np.abs(z), axis=2)
     mn, mx = np.min(anomaly), np.max(anomaly)
     den = (mx - mn) if (mx - mn) > 1e-8 else 1.0
     norm = (anomaly - mn) / den
     return norm
 
 def heatmap_to_color(hmap):
-    # hmap expected 0-1 float
     h_uint8 = np.clip((hmap * 255).astype(np.uint8), 0, 255)
-    colored = cv2.applyColorMap(h_uint8, cv2.COLORMAP_JET)  # returns BGR
+    colored = cv2.applyColorMap(h_uint8, cv2.COLORMAP_JET)
     colored_rgb = cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
     return colored_rgb
 
 def overlay_on_image(img_rgb, heat_rgb, alpha=0.45):
-    # both RGB uint8 or float 0-255
     img_u8 = img_rgb.astype(np.uint8)
     heat_u8 = heat_rgb.astype(np.uint8)
     overlay = cv2.addWeighted(img_u8, 1.0 - alpha, heat_u8, alpha, 0)
@@ -142,7 +122,6 @@ def threshold_anomaly_map(hmap, method="fixed", fixed_val=0.4):
         return binmap
 
 def find_regions(binary_map):
-    # input binary_map in {0,1}, uint8
     bin_u8 = (binary_map * 255).astype(np.uint8)
     contours, _ = cv2.findContours(bin_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     regions = []
@@ -154,7 +133,6 @@ def find_regions(binary_map):
             cy = M["m01"] / M["m00"]
         else:
             cx, cy = 0.0, 0.0
-        # find bounding box (x,y,w,h)
         x, y, w, h = cv2.boundingRect(cnt)
         regions.append({
             "area": area,
@@ -162,17 +140,22 @@ def find_regions(binary_map):
             "bbox": (x, y, w, h),
             "contour": cnt
         })
-    # sort by area desc
     regions.sort(key=lambda r: r["area"], reverse=True)
     return regions
 
 def image_to_bytes(img_rgb, ext=".png"):
-    # Convert RGB to BGR then encode
     bgr = cv2.cvtColor(img_rgb.astype(np.uint8), cv2.COLOR_RGB2BGR)
     success, buf = cv2.imencode(ext, bgr)
     if not success:
         raise RuntimeError("Failed to encode image")
     return buf.tobytes()
+
+def norm01(a):
+    a = np.nan_to_num(a.astype(np.float32))
+    mn, mx = a.min(), a.max()
+    if mx - mn < 1e-8:
+        return np.zeros_like(a)
+    return (a - mn) / (mx - mn)
 
 # ---------------------------
 # UI
@@ -203,65 +186,45 @@ if uploaded is not None and run_btn:
     img_rgb = resize_max_dim(img_rgb, max_dim)
     img_gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
 
-    # --- compute maps ---
-with st.spinner("Computing ELA, Edge map, LBP, DCT noise..."):
-        ela = compute_ela(img_rgb, quality=ela_quality)          # 0-1
-        edges = compute_edge_map(img_gray)                      # 0-1
-        lbp = compute_lbp(img_gray)                             # 0-1
-        noise = compute_dct_highfreq(img_gray, keep_low=dct_low)# 0-1
+    with st.spinner("Computing ELA, Edge map, LBP, DCT noise..."):
+        ela = compute_ela(img_rgb, quality=ela_quality)
+        edges = compute_edge_map(img_gray)
+        lbp = compute_lbp(img_gray)
+        noise = compute_dct_highfreq(img_gray, keep_low=dct_low)
 
-    # normalize each to 0-1 safety
-    def norm01(a):
-        a = np.nan_to_num(a.astype(np.float32))
-        mn, mx = a.min(), a.max()
-        if mx - mn < 1e-8:
-            return np.zeros_like(a)
-        return (a - mn) / (mx - mn)
     ela_n = norm01(ela)
     edges_n = norm01(edges)
     lbp_n = norm01(lbp)
     noise_n = norm01(noise)
 
-    # combine into z-score anomaly heatmap
-    heatmap = combine_zscore_map(edges_n, lbp_n, noise_n)  # 0-1
+    heatmap = combine_zscore_map(edges_n, lbp_n, noise_n)
 
-    # binary map
     if threshold_method == "otsu":
         binary = threshold_anomaly_map(heatmap, method="otsu")
     else:
         binary = threshold_anomaly_map(heatmap, method="fixed", fixed_val=fixed_threshold)
 
-    # morphological clean
     kernel = np.ones((3,3), np.uint8)
     binary = cv2.morphologyEx(binary.astype(np.uint8), cv2.MORPH_OPEN, kernel, iterations=1)
 
-    # regions
     regions = find_regions(binary)
-    # filter small regions
     regions = [r for r in regions if r["area"] >= min_region_area]
 
-    # colored heatmap + overlay
-    heat_color = heatmap_to_color(heatmap)  # RGB
+    heat_color = heatmap_to_color(heatmap)
     overlay = overlay_on_image(img_rgb, heat_color, alpha=overlay_alpha)
 
-    # annotation: draw bounding boxes on overlay for regions
     overlay_annot = overlay.copy()
     for i, r in enumerate(regions, 1):
         x, y, w, h = r["bbox"]
-        cv2.rectangle(overlay_annot, (x, y), (x+w, y+h), (255,255,255), 2)  # white box
-        # label
+        cv2.rectangle(overlay_annot, (x, y), (x+w, y+h), (255,255,255), 2)
         cx, cy = int(r["centroid"][0]), int(r["centroid"][1])
         cv2.putText(overlay_annot, f"{i}", (x, y-6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2, cv2.LINE_AA)
 
-    # final manipulation score and decision
-    manipulation_score = float(np.mean(heatmap))  # 0-1
-    # map the score to confidence more smoothly:
-    confidence_score = manipulation_score  # you may map differently (e.g., sigmoid)
-    # decision threshold for 'fake' vs 'real' - allow user to adjust (use same fixed_threshold or derived)
+    manipulation_score = float(np.mean(heatmap))
+    confidence_score = manipulation_score
     decision_threshold = fixed_threshold
     decision = "Fake" if manipulation_score >= decision_threshold else "Real"
 
-    # ---------- Display results ----------
     st.subheader("Analytical Maps")
     cols = st.columns(4)
     cols[0].image((ela_n * 255).astype(np.uint8), caption="ELA Map", use_container_width=True)
@@ -272,11 +235,10 @@ with st.spinner("Computing ELA, Edge map, LBP, DCT noise..."):
     st.subheader("Combined Anomaly Detection")
     c1, c2 = st.columns([1,1])
     with c1:
-        st.image((heat_color).astype(np.uint8), caption="Z-score Heatmap (colored)", use_container_width=True)
+        st.image(heat_color.astype(np.uint8), caption="Z-score Heatmap (colored)", use_container_width=True)
         st.image((binary*255).astype(np.uint8), caption="Binary Anomaly Map", use_container_width=True)
     with c2:
         st.image(overlay_annot.astype(np.uint8), caption="Overlay + Detected Regions", use_container_width=True)
-        # regions summary
         st.markdown(f"Detected suspicious regions (area >= {min_region_area} px): {len(regions)}")
         if len(regions) > 0:
             for i, r in enumerate(regions, 1):
@@ -288,11 +250,10 @@ with st.spinner("Computing ELA, Edge map, LBP, DCT noise..."):
     st.markdown(f"- Prediction: {decision}")
     st.markdown(f"- Confidence (manipulation score): {confidence_score:.2%} (avg heatmap intensity)")
     st.caption("⚠️ Note: This analytic detector flags anomalous regions — for production you should train a supervised classifier (CNN) on labeled real/fake data to get higher reliability.")
-# download overlay image
+
     img_bytes = image_to_bytes(overlay_annot, ext=".png")
     st.download_button("⬇️ Download overlay (PNG)", data=img_bytes, file_name="anomaly_overlay.png", mime="image/png")
 
-    # show numeric slider to allow threshold tuning for decision
     st.markdown("### Tweak & re-run decision")
     new_thresh = st.slider("Decision threshold (heatmap mean)", 0.01, 0.9, float(fixed_threshold), step=0.01, key="decision_thresh")
     st.write(f"Current mean heatmap score: {manipulation_score:.4f}")
@@ -302,5 +263,3 @@ with st.spinner("Computing ELA, Edge map, LBP, DCT noise..."):
 
 else:
     st.info("Upload an image and click 'Run analysis' to start. If you want a *self-contained* version (from raw image → prediction) I can bundle everything into one file that also includes optional training scaffolding.")
-
-
