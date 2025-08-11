@@ -13,6 +13,7 @@ def load_image_from_upload(ufile):
     img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
     if img_bgr is None:
         raise ValueError("Cannot decode image")
+    # If 4 channels (RGBA), convert to RGB dropping alpha
     if img_bgr.ndim == 2:
         img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
     if img_bgr.shape[2] == 4:
@@ -150,13 +151,6 @@ def image_to_bytes(img_rgb, ext=".png"):
         raise RuntimeError("Failed to encode image")
     return buf.tobytes()
 
-def norm01(a):
-    a = np.nan_to_num(a.astype(np.float32))
-    mn, mx = a.min(), a.max()
-    if mx - mn < 1e-8:
-        return np.zeros_like(a)
-    return (a - mn) / (mx - mn)
-
 # ---------------------------
 # UI
 # ---------------------------
@@ -192,6 +186,12 @@ if uploaded is not None and run_btn:
         lbp = compute_lbp(img_gray)
         noise = compute_dct_highfreq(img_gray, keep_low=dct_low)
 
+    def norm01(a):
+        a = np.nan_to_num(a.astype(np.float32))
+        mn, mx = a.min(), a.max()
+        if mx - mn < 1e-8:
+            return np.zeros_like(a)
+        return (a - mn) / (mx - mn)
     ela_n = norm01(ela)
     edges_n = norm01(edges)
     lbp_n = norm01(lbp)
@@ -235,7 +235,7 @@ if uploaded is not None and run_btn:
     st.subheader("Combined Anomaly Detection")
     c1, c2 = st.columns([1,1])
     with c1:
-        st.image(heat_color.astype(np.uint8), caption="Z-score Heatmap (colored)", use_container_width=True)
+        st.image((heat_color).astype(np.uint8), caption="Z-score Heatmap (colored)", use_container_width=True)
         st.image((binary*255).astype(np.uint8), caption="Binary Anomaly Map", use_container_width=True)
     with c2:
         st.image(overlay_annot.astype(np.uint8), caption="Overlay + Detected Regions", use_container_width=True)
@@ -251,6 +251,14 @@ if uploaded is not None and run_btn:
     st.markdown(f"- Confidence (manipulation score): {confidence_score:.2%} (avg heatmap intensity)")
     st.caption("⚠️ Note: This analytic detector flags anomalous regions — for production you should train a supervised classifier (CNN) on labeled real/fake data to get higher reliability.")
 
+    # إضافة رسالة واضحة للحكم النهائي
+    st.markdown("---")
+    st.header("🛑 Final Authenticity Check")
+    if decision == "Fake":
+        st.error("⚠️ هذه الصورة **مُزيفة**")
+    else:
+        st.success("✅ هذه الصورة **حقيقية**")
+
     img_bytes = image_to_bytes(overlay_annot, ext=".png")
     st.download_button("⬇️ Download overlay (PNG)", data=img_bytes, file_name="anomaly_overlay.png", mime="image/png")
 
@@ -263,3 +271,4 @@ if uploaded is not None and run_btn:
 
 else:
     st.info("Upload an image and click 'Run analysis' to start. If you want a *self-contained* version (from raw image → prediction) I can bundle everything into one file that also includes optional training scaffolding.")
+
