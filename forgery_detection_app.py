@@ -22,11 +22,19 @@ def load_image_from_upload(ufile):
     return img_rgb
 
 def resize_max_dim(img, max_dim):
+    print(f"type(img): {type(img)}")
+    if img is None:
+        raise ValueError("Image is None")
+    if not hasattr(img, "shape"):
+        raise ValueError("Image has no shape attribute")
     h, w = img.shape[:2]
+    print(f"h: {h}, w: {w}")
     scale = min(max_dim / max(h, w), 1.0)
+    print(f"scale: {scale}")
     if scale < 1.0:
         img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     return img
+
 
 def compute_ela(img_rgb, quality=90):
     # ELA: recompress to JPEG and take absolute difference
