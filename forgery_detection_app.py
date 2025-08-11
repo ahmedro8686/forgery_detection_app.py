@@ -2,11 +2,12 @@ import streamlit as st
 import numpy as np
 import cv2
 from io import BytesIO
-import tensorflow as tf
-from tensorflow.keras import layers, models
 
-# ---- تعريفات الدوال الأساسية ----
+st.set_page_config(page_title="Image Forgery Detector", layout="wide")
 
+# ---------------------------
+# Helpers
+# ---------------------------
 def load_image_from_upload(ufile):
     file_bytes = np.asarray(bytearray(ufile.read()), dtype=np.uint8)
     img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
@@ -20,6 +21,10 @@ def load_image_from_upload(ufile):
     return img_rgb
 
 def resize_max_dim(img, max_dim):
+    if img is None:
+        raise ValueError("Image is None")
+    if not hasattr(img, "shape"):
+        raise ValueError("Image has no shape attribute")
     h, w = img.shape[:2]
     scale = min(max_dim / max(h, w), 1.0)
     if scale < 1.0:
@@ -28,7 +33,7 @@ def resize_max_dim(img, max_dim):
 
 def compute_ela(img_rgb, quality=90):
     img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
     success, encimg = cv2.imencode('.jpg', img_bgr, encode_param)
     if not success:
         return np.zeros_like(img_rgb[...,0]).astype(np.float32)
@@ -95,7 +100,19 @@ def combine_zscore_map(edges, lbp, noise):
     norm = (anomaly - mn) / den
     return norm
 
-def threshold_anomaly_map(hmap, method="fixed", fixed_val=0.4):
+def heatmap_to_color(hmap):
+    h_uint8 = np.clip((hmap * 255).astype(np.uint8), 0, 255)
+    colored = cv2.applyColorMap(h_uint8, cv2.COLORMAP_JET)
+    colored_rgb = cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
+    return colored_rgb
+
+def overlay_on_image(img_rgb, heat_rgb, alpha=0.45):
+    img_u8 = img_rgb.astype(np.uint8)
+    heat_u8 = heat_rgb.astype(np.uint8)
+    overlay = cv2.addWeighted(img_u8, 1.0 - alpha, heat_u8, alpha, 0)
+    return overlay
+
+def threshold_anomaly_map(hmap, method="fixed", fixed_val=0.6):
     if method == "otsu":
         arr = (hmap * 255).astype(np.uint8)
         _, binmap = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -126,18 +143,6 @@ def find_regions(binary_map):
     regions.sort(key=lambda r: r["area"], reverse=True)
     return regions
 
-def heatmap_to_color(hmap):
-    h_uint8 = np.clip((hmap * 255).astype(np.uint8), 0, 255)
-    colored = cv2.applyColorMap(h_uint8, cv2.COLORMAP_JET)
-    colored_rgb = cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
-    return colored_rgb
-
-def overlay_on_image(img_rgb, heat_rgb, alpha=0.45):
-    img_u8 = img_rgb.astype(np.uint8)
-    heat_u8 = heat_rgb.astype(np.uint8)
-    overlay = cv2.addWeighted(img_u8, 1.0 - alpha, heat_u8, alpha, 0)
-    return overlay
-
 def image_to_bytes(img_rgb, ext=".png"):
     bgr = cv2.cvtColor(img_rgb.astype(np.uint8), cv2.COLOR_RGB2BGR)
     success, buf = cv2.imencode(ext, bgr)
@@ -145,62 +150,19 @@ def image_to_bytes(img_rgb, ext=".png"):
         raise RuntimeError("Failed to encode image")
     return buf.tobytes()
 
-# ---- نموذج CNN + بيانات تدريب توليدية ----
-
-def build_cnn(input_shape=(128,128,4)):
-    model = models.Sequential([
-        layers.Conv2D(16, (3,3), activation='relu', input_shape=input_shape),
-        layers.MaxPooling2D((2,2)),
-        layers.Conv2D(32, (3,3), activation='relu'),
-        layers.MaxPooling2D((2,2)),
-        layers.Flatten(),
-        layers.Dense(64, activation='relu'),
-        layers.Dense(1, activation='sigmoid')
-    ])
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-    return model
-
-def generate_synthetic_training_data(num_samples=100):
-    real_samples = np.random.rand(num_samples//2, 128, 128, 4)*0.3
-    real_labels = np.zeros((num_samples//2, 1))
-    fake_samples = np.random.rand(num_samples//2, 128, 128, 4)*0.7 + 0.3
-    fake_labels = np.ones((num_samples//2, 1))
-    X = np.concatenate([real_samples, fake_samples], axis=0)
-    y = np.concatenate([real_labels, fake_labels], axis=0)
-    idx = np.arange(num_samples)
-    np.random.shuffle(idx)
-    return X[idx], y[idx]
-
-def prepare_cnn_input(ela, edges, lbp, noise):
-    from cv2 import resize
-    def norm_resize(a):
-        a = (a - a.min()) / (a.max() - a.min() + 1e-8)
-        return cv2.resize(a, (128,128), interpolation=cv2.INTER_AREA)
-    ela_r = norm_resize(ela)
-    edges_r = norm_resize(edges)
-    lbp_r = norm_resize(lbp)
-    noise_r = norm_resize(noise)
-    stacked = np.stack([ela_r, edges_r, lbp_r, noise_r], axis=-1)
-    return np.expand_dims(stacked, axis=0).astype(np.float32)
-
-@st.cache_resource
-def get_trained_cnn():
-    model = build_cnn()
-    X_train, y_train = generate_synthetic_training_data(200)
-    model.fit(X_train, y_train, epochs=10, batch_size=16, verbose=0)
-    return model
-
-# ---- واجهة المستخدم ----
-
-st.title("🔎 Image Forgery Detection — Full App with CNN Enhancement")
-st.write("Upload an image and the app computes analytical maps and also uses a simple CNN model for improved forgery detection.")
+# ---------------------------
+# UI
+# ---------------------------
+st.title("🔎 Image Forgery Detection — Full App")
+st.write("Upload an image and the app will compute ELA, Edge, LBP, DCT noise maps, combine them into a heatmap, and give a final prediction + confidence. (No pretrained CNN — uses analytic fusion + threshold)")
 
 with st.sidebar:
+    st.header("Settings")
     max_dim = st.slider("Max image dimension (px)", 256, 2048, 1024, step=64)
     ela_quality = st.slider("ELA JPEG quality (recompress)", 50, 95, 90)
     dct_low = st.slider("DCT low-frequency block size (smaller → more HF)", 4, 128, 16)
     threshold_method = st.selectbox("Binary threshold method", ["fixed", "otsu"])
-    fixed_threshold = st.slider("Fixed heatmap threshold (used if method=fixed)", 0.01, 0.9, 0.35, step=0.01)
+    fixed_threshold = st.slider("Fixed heatmap threshold (used if method=fixed)", 0.01, 0.9, 0.6, step=0.01)  # default 0.6
     overlay_alpha = st.slider("Overlay alpha", 0.05, 0.9, 0.45, step=0.05)
     min_region_area = st.number_input("Min region area (px) to report", 0, 1000000, 20, step=10)
 
@@ -223,10 +185,16 @@ if uploaded is not None and run_btn:
         lbp = compute_lbp(img_gray)
         noise = compute_dct_highfreq(img_gray, keep_low=dct_low)
 
-    ela_n = (ela - ela.min()) / (ela.max() - ela.min() + 1e-8)
-    edges_n = (edges - edges.min()) / (edges.max() - edges.min() + 1e-8)
-    lbp_n = (lbp - lbp.min()) / (lbp.max() - lbp.min() + 1e-8)
-    noise_n = (noise - noise.min()) / (noise.max() - noise.min() + 1e-8)
+    def norm01(a):
+        a = np.nan_to_num(a.astype(np.float32))
+        mn, mx = a.min(), a.max()
+        if mx - mn < 1e-8:
+            return np.zeros_like(a)
+        return (a - mn) / (mx - mn)
+    ela_n = norm01(ela)
+    edges_n = norm01(edges)
+    lbp_n = norm01(lbp)
+    noise_n = norm01(noise)
 
     heatmap = combine_zscore_map(edges_n, lbp_n, noise_n)
 
@@ -256,11 +224,6 @@ if uploaded is not None and run_btn:
     decision_threshold = fixed_threshold
     decision = "Fake" if manipulation_score >= decision_threshold else "Real"
 
-    model = get_trained_cnn()
-    cnn_input = prepare_cnn_input(ela_n, edges_n, lbp_n, noise_n)
-    cnn_pred = model.predict(cnn_input)[0][0]
-    cnn_decision = "Fake" if cnn_pred >= 0.5 else "Real"
-
     st.subheader("Analytical Maps")
     cols = st.columns(4)
     cols[0].image((ela_n * 255).astype(np.uint8), caption="ELA Map", use_container_width=True)
@@ -283,12 +246,13 @@ if uploaded is not None and run_btn:
 
     st.markdown("---")
     st.subheader("Final Result")
-    st.markdown(f"- Analytical Prediction: {decision} (Confidence: {confidence_score:.2%})")
-    st.markdown(f"- CNN Model Prediction: {cnn_decision} (Confidence: {cnn_pred:.2%})")
+    st.markdown(f"- Prediction: **{decision}**")
+    st.markdown(f"- Confidence (manipulation score): **{confidence_score:.2%}** (avg heatmap intensity)")
+    st.caption("⚠️ Note: This analytic detector flags anomalous regions — for production you should train a supervised classifier (CNN) on labeled real/fake data to get higher reliability.")
 
     st.markdown("---")
     st.header("🛑 Final Authenticity Check")
-    if decision == "Fake" or cnn_decision == "Fake":
+    if decision == "Fake":
         st.error("⚠️ هذه الصورة **مُزيفة**")
     else:
         st.success("✅ هذه الصورة **حقيقية**")
@@ -296,5 +260,12 @@ if uploaded is not None and run_btn:
     img_bytes = image_to_bytes(overlay_annot, ext=".png")
     st.download_button("⬇️ Download overlay (PNG)", data=img_bytes, file_name="anomaly_overlay.png", mime="image/png")
 
+    st.markdown("### Tweak & re-run decision")
+    new_thresh = st.slider("Decision threshold (heatmap mean)", 0.01, 0.9, float(fixed_threshold), step=0.01, key="decision_thresh")
+    st.write(f"Current mean heatmap score: {manipulation_score:.4f}")
+    if st.button("Apply new threshold"):
+        new_decision = "Fake" if manipulation_score >= new_thresh else "Real"
+        st.success(f"New decision with threshold {new_thresh:.2f}: {new_decision}")
+
 else:
-    st.info("Upload an image and click 'Run analysis' to start.")
+    st.info("Upload an image and click 'Run analysis' to start. If you want a *self-contained* version (from raw image → prediction) I can bundle everything into one file that also includes optional training scaffolding.")
