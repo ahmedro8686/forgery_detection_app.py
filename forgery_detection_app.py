@@ -108,7 +108,7 @@ def compute_dct_highfreq(img_gray, keep_low=16):
 def combine_zscore_map(edges, lbp, noise):
     # stack and compute per-pixel z-score magnitude across feature channels
     stack = np.stack([edges, lbp, noise], axis=2).astype(np.float32)
-mu = np.mean(stack, axis=2, keepdims=True)
+    mu = np.mean(stack, axis=2, keepdims=True)
     sigma = np.std(stack, axis=2, keepdims=True) + 1e-8
     z = (stack - mu) / sigma
     anomaly = np.mean(np.abs(z), axis=2)  # average absolute z across channels
