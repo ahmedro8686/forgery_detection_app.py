@@ -1,4 +1,7 @@
 streamlit
 opencv-python-headless
 numpy
-tensorflow-cpu
+matplotlib
+scikit-image
+Pillow
+scipy
