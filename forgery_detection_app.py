@@ -3,74 +3,83 @@ import numpy as np
 import cv2
 from skimage.feature import local_binary_pattern
 from skimage import measure
-from scipy.stats import zscore
+from scipy import fftpack
 
+# إعداد واجهة التطبيق
 st.title("🕵️ Advanced Image Forgery Detection")
 
-# ----------- 1. رفع الصورة -----------
-uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
-if uploaded_file:
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    # قراءة الصورة
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    bgr_img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    original_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB)
+    original_img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    original_img = cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB)
 
-    # ----------- 2. حساب الخرائط التحليلية -----------
-    # Edge Map
-    edges = cv2.Canny(bgr_img, 100, 200)
-    edges_norm = edges / 255.0
-
-    # LBP Texture Map
-    gray = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
-    lbp = local_binary_pattern(gray, P=8, R=3, method='uniform')
-    lbp_norm = (lbp - lbp.min()) / (lbp.max() - lbp.min())
-
-    # Noise Map (DCT)
-    gray_f = np.float32(gray) / 255.0
-    dct = cv2.dct(gray_f)
-    high_freq = np.abs(dct)
-    noise_norm = (high_freq - high_freq.min()) / (high_freq.max() - high_freq.min())
-
-    # ----------- 3. توحيد النتائج باستخدام Z-Score -----------
-    combined = (edges_norm + lbp_norm + noise_norm) / 3.0
-    heatmap = zscore(combined)
-    heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
-
-    anomaly_binary = (heatmap > 0.6).astype(np.uint8)
-
-    # ----------- 4. تحديد المناطق المشتبه فيها -----------
-    labeled = measure.label(anomaly_binary, connectivity=2)
-    regions = measure.regionprops(labeled)
-
-    # ----------- 5. عرض النتائج -----------
     st.image(original_img, caption="Original Image", use_container_width=True)
 
+    # تحويل للصورة الرمادية
+    gray = cv2.cvtColor(original_img, cv2.COLOR_RGB2GRAY)
+    gray_f = np.float32(gray) / 255.0
+
+    # -------- Edge Map --------
+    edges = cv2.Canny(gray, 100, 200)
+    edges_norm = edges / 255.0
+
+    # -------- LBP Texture Map --------
+    radius = 3
+    n_points = 8 * radius
+    lbp = local_binary_pattern(gray, n_points, radius, method='uniform')
+    lbp_norm = lbp / lbp.max()
+
+    # -------- Noise Map (DCT) --------
+    dct = fftpack.dct(fftpack.dct(gray_f.T, norm='ortho').T, norm='ortho')
+    noise_map = np.abs(dct)
+    noise_norm = noise_map / noise_map.max()
+
+    # -------- دمج وتحليل anomalies --------
+    combined_map = (edges_norm + lbp_norm + noise_norm) / 3.0
+    z_score_map = (combined_map - np.mean(combined_map)) / np.std(combined_map)
+
+    anomaly_binary = (np.abs(z_score_map) > 2).astype(np.uint8)
+    regions = measure.regionprops(measure.label(anomaly_binary))
+
+    # -------- رسم الخرائط --------
     cols = st.columns(4)
-    cols[0].image(edges_norm, caption="Edge Map", use_container_width=True)
-    cols[1].image(lbp_norm, caption="LBP Texture Map", use_container_width=True)
-    cols[2].image(noise_norm, caption="Noise Map (DCT)", use_container_width=True)
-    cols[3].image(heatmap, caption="Z-score Heatmap", use_container_width=True)
+    cols[0].image(edges_norm, caption="Edge Map", clamp=True, use_container_width=True)
+    cols[1].image(lbp_norm, caption="LBP Texture Map", clamp=True, use_container_width=True)
+    cols[2].image(noise_norm, caption="Noise Map (DCT)", clamp=True, use_container_width=True)
+    cols[3].image(combined_map, caption="Combined Map", clamp=True, use_container_width=True)
 
-    st.image(anomaly_binary * 255, caption="Binary Anomaly Map", use_container_width=True)
+    st.image(z_score_map, caption="Z-score Heatmap of Anomalies", use_container_width=True)
+    st.image(anomaly_binary, caption="Binary Anomaly Map", clamp=True, use_container_width=True)
 
-    # رسم المربعات على الأماكن المشتبه بها
-    original_copy = original_img.copy()
-    for region in regions:
-        minr, minc, maxr, maxc = region.bbox
-        cv2.rectangle(original_copy, (minc, minr), (maxc, maxr), (255, 0, 0), 2)
-        cv2.putText(original_copy, "Suspicious", (minc, minr - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-    st.image(original_copy, caption="Detected Suspicious Regions", use_container_width=True)
+    # -------- رسم مستطيلات على المناطق المشبوهة --------
+    if len(regions) > 0:
+        original_copy = original_img.copy()
+        for region in regions:
+            minr, minc, maxr, maxc = region.bbox
+            cv2.rectangle(original_copy, (minc, minr), (maxc, maxr), (255, 0, 0), 2)
+            cv2.putText(original_copy, "Suspicious", (minc, minr - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
 
-    # ----------- 6. حساب نسبة الثقة -----------
-    mean_score = float(np.mean(heatmap))
-    area_score = sum([r.area for r in regions]) / (original_img.shape[0] * original_img.shape[1])
-    final_score = (mean_score + area_score) / 2
+        st.subheader(f"Detected Suspicious Regions: {len(regions)}")
+        st.image(original_copy, caption="Suspicious Regions Highlighted", use_container_width=True)
+    else:
+        st.subheader("No suspicious regions detected.")
 
-    label = "Fake" if final_score > 0.35 else "Real"
+    # -------- حساب نسبة الثقة --------
+    manipulation_score = float(np.mean(np.abs(z_score_map)))
+    threshold = 0.4
+    predicted_label = "Fake" if manipulation_score > threshold else "Real"
+    st.markdown(f"### 🏷 Prediction: {predicted_label}")
+    st.markdown(f"Confidence Score: {manipulation_score:.2%}")
 
-    st.markdown(f"### 🏷 Prediction: {label}")
-    st.markdown(f"**Mean Score:** {mean_score:.2%}")
-    st.markdown(f"**Area Score:** {area_score:.2%}")
-    st.markdown(f"**Final Confidence:** {final_score:.2%}")
+    # -------- حفظ النتيجة --------
+    result_bgr = cv2.cvtColor((combined_map * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    cv2.imwrite("anomaly_result.png", result_bgr)
+    with open("anomaly_result.png", "rb") as file:
+        st.download_button("Download Result Image", file, "anomaly_result.png")
+
 
 
