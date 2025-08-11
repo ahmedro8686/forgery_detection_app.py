@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
 import cv2
+import traceback
 
 # --- دالة استخراج الميزات الأساسية من الخرائط ---
 def extract_features(edges, lbp, noise):
@@ -31,7 +32,9 @@ try:
     overlay = cv2.imread("overlay.png") / 255.0
     anomaly_binary = np.load("anomaly_binary.npy")
     regions = []  # يمكن تحمّل بيانات المناطق من ملف pickle إذا متوفر
-except Exception:
+except Exception as e:
+    st.error("حدث خطأ أثناء تحميل البيانات، سيتم استخدام بيانات وهمية للتجربة.")
+    st.error(traceback.format_exc())
     # لو الملفات مش موجودة أو فيه خطأ، نولّد بيانات وهمية للتجربة
     edges_norm = np.random.rand(256, 256)
     lbp_norm = np.random.rand(256, 256)
@@ -98,3 +101,4 @@ Performance Tips:
 - Use resized images for faster processing.
 - Adjust thresholds for better accuracy.
 """)
+
