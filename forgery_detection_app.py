@@ -13,21 +13,25 @@ def extract_features(edges, lbp, noise):
     features.append(np.std(noise))
     return np.array(features)
 
-# --- مثال: حساب النتيجة من خريطة الـ anomalies ---
-def classify_image(anomaly_binary, z_score_map, pixel_ratio_thresh=0.01, zscore_thresh=3):
-    pixel_ratio = np.sum(anomaly_binary) / anomaly_binary.size
-    max_zscore = np.max(np.abs(z_score_map))
+# --- تحسين التصنيف ---
+def classify_image(anomaly_binary, edges, lbp, noise, threshold=0.2):
+    mean_anomaly = np.mean(anomaly_binary)
+    max_anomaly = np.max(anomaly_binary)
+    area_ratio = np.sum(anomaly_binary > 0) / anomaly_binary.size
+    texture_var = np.std(lbp)
+    noise_var = np.std(noise)
 
-    if pixel_ratio > pixel_ratio_thresh or max_zscore > zscore_thresh:
-        return "Fake", max(pixel_ratio, max_zscore / 10)
+    score = (mean_anomaly * 0.4) + (max_anomaly * 0.3) + (area_ratio * 0.2) + ((texture_var + noise_var) * 0.05)
+    if score > threshold:
+        return "Fake", score
     else:
-        return "Real", 1 - pixel_ratio
+        return "Real", 1 - score
 
 # يفترض أنك محمّل هذه الصور من مرحلة التحليل
 # edges_norm, lbp_norm, noise_norm, heatmap, overlay, anomaly_binary, regions
 
 # --- تصنيف ---
-predicted_label, confidence_score = classify_image(anomaly_binary, heatmap)
+predicted_label, confidence_score = classify_image(anomaly_binary, edges_norm, lbp_norm, noise_norm)
 
 # --- واجهة Streamlit ---
 st.markdown("""
@@ -83,3 +87,4 @@ Performance Tips:
 - Use resized images for faster processing.
 - Adjust thresholds for better accuracy.
 """)
+
