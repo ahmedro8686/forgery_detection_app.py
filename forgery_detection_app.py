@@ -13,25 +13,36 @@ def extract_features(edges, lbp, noise):
     features.append(np.std(noise))
     return np.array(features)
 
-# --- تحسين التصنيف ---
-def classify_image(anomaly_binary, edges, lbp, noise, threshold=0.2):
+# --- مثال: حساب النتيجة من خريطة الـ anomalies ---
+def classify_image(anomaly_binary, threshold=0.2):
     mean_anomaly = np.mean(anomaly_binary)
-    max_anomaly = np.max(anomaly_binary)
-    area_ratio = np.sum(anomaly_binary > 0) / anomaly_binary.size
-    texture_var = np.std(lbp)
-    noise_var = np.std(noise)
-
-    score = (mean_anomaly * 0.4) + (max_anomaly * 0.3) + (area_ratio * 0.2) + ((texture_var + noise_var) * 0.05)
-    if score > threshold:
-        return "Fake", score
+    if mean_anomaly > threshold:
+        return "Fake", mean_anomaly
     else:
-        return "Real", 1 - score
+        return "Real", 1 - mean_anomaly
 
-# يفترض أنك محمّل هذه الصور من مرحلة التحليل
-# edges_norm, lbp_norm, noise_norm, heatmap, overlay, anomaly_binary, regions
+# --- محاولة تحميل البيانات الفعلية أو توليد بيانات وهمية ---
+try:
+    # جرب تحميل المتغيرات من ملفات (عدل حسب ملفاتك)
+    edges_norm = np.load("edges_norm.npy")
+    lbp_norm = np.load("lbp_norm.npy")
+    noise_norm = np.load("noise_norm.npy")
+    heatmap = cv2.imread("heatmap.png") / 255.0
+    overlay = cv2.imread("overlay.png") / 255.0
+    anomaly_binary = np.load("anomaly_binary.npy")
+    regions = []  # يمكن تحمّل بيانات المناطق من ملف pickle إذا متوفر
+except Exception:
+    # لو الملفات مش موجودة أو فيه خطأ، نولّد بيانات وهمية للتجربة
+    edges_norm = np.random.rand(256, 256)
+    lbp_norm = np.random.rand(256, 256)
+    noise_norm = np.random.rand(256, 256)
+    heatmap = np.random.rand(256, 256, 3)
+    overlay = np.random.rand(256, 256, 3)
+    anomaly_binary = np.random.choice([0, 1], size=(256, 256), p=[0.8, 0.2])
+    regions = []
 
 # --- تصنيف ---
-predicted_label, confidence_score = classify_image(anomaly_binary, edges_norm, lbp_norm, noise_norm)
+predicted_label, confidence_score = classify_image(anomaly_binary)
 
 # --- واجهة Streamlit ---
 st.markdown("""
@@ -87,4 +98,3 @@ Performance Tips:
 - Use resized images for faster processing.
 - Adjust thresholds for better accuracy.
 """)
-
