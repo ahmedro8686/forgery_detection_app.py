@@ -5,9 +5,148 @@ from io import BytesIO
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-# --- (احتفظ بباقي الدوال كما هي) ---
+# ---- تعريفات الدوال الأساسية ----
 
-# دالة لبناء نموذج CNN بسيط
+def load_image_from_upload(ufile):
+    file_bytes = np.asarray(bytearray(ufile.read()), dtype=np.uint8)
+    img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
+    if img_bgr is None:
+        raise ValueError("Cannot decode image")
+    if img_bgr.ndim == 2:
+        img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
+    if img_bgr.shape[2] == 4:
+        img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_BGRA2BGR)
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    return img_rgb
+
+def resize_max_dim(img, max_dim):
+    h, w = img.shape[:2]
+    scale = min(max_dim / max(h, w), 1.0)
+    if scale < 1.0:
+        img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    return img
+
+def compute_ela(img_rgb, quality=90):
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    success, encimg = cv2.imencode('.jpg', img_bgr, encode_param)
+    if not success:
+        return np.zeros_like(img_rgb[...,0]).astype(np.float32)
+    decimg = cv2.imdecode(encimg, cv2.IMREAD_COLOR)
+    dec_rgb = cv2.cvtColor(decimg, cv2.COLOR_BGR2RGB)
+    diff = cv2.absdiff(img_rgb, dec_rgb).astype(np.float32)
+    diff_gray = np.mean(diff, axis=2)
+    maxv = diff_gray.max() if diff_gray.max() > 0 else 1.0
+    ela_norm = diff_gray / maxv
+    return ela_norm
+
+def compute_edge_map(img_gray):
+    v = np.median(img_gray)
+    lower = int(max(0, 0.66 * v))
+    upper = int(min(255, 1.33 * v))
+    edges = cv2.Canny(img_gray.astype(np.uint8), lower, upper)
+    edges = edges.astype(np.float32) / 255.0
+    return edges
+
+def compute_lbp(img_gray):
+    img = img_gray.astype(np.float32)
+    h, w = img.shape
+    padded = cv2.copyMakeBorder(img, 1,1,1,1, cv2.BORDER_REFLECT)
+    center = padded[1:-1,1:-1]
+    bits = np.zeros((h,w,8), dtype=np.uint8)
+    neighbors = [
+        padded[0:-2,0:-2], padded[0:-2,1:-1], padded[0:-2,2:],
+        padded[1:-1,2:], padded[2:,2:], padded[2:,1:-1],
+        padded[2:,0:-2], padded[1:-1,0:-2]
+    ]
+    for i, nb in enumerate(neighbors):
+        bits[..., i] = (nb >= center).astype(np.uint8)
+    powers = (1 << np.arange(8)).astype(np.uint8)
+    lbp = np.sum(bits * powers[::-1], axis=2)
+    lbp_norm = lbp.astype(np.float32) / 255.0
+    return lbp_norm
+
+def compute_dct_highfreq(img_gray, keep_low=16):
+    img_f = img_gray.astype(np.float32) / 255.0
+    h, w = img_f.shape
+    try:
+        dct = cv2.dct(img_f)
+        mask = np.ones_like(dct)
+        mask[:keep_low, :keep_low] = 0
+        dct_high = dct * mask
+        idct = cv2.idct(dct_high)
+        high = np.abs(idct)
+        maxv = high.max() if high.max() > 0 else 1.0
+        return high / maxv
+    except Exception:
+        lap = cv2.Laplacian(img_gray, cv2.CV_32F)
+        lap = np.abs(lap)
+        maxv = lap.max() if lap.max() > 0 else 1.0
+        return lap / maxv
+
+def combine_zscore_map(edges, lbp, noise):
+    stack = np.stack([edges, lbp, noise], axis=2).astype(np.float32)
+    mu = np.mean(stack, axis=2, keepdims=True)
+    sigma = np.std(stack, axis=2, keepdims=True) + 1e-8
+    z = (stack - mu) / sigma
+    anomaly = np.mean(np.abs(z), axis=2)
+    mn, mx = np.min(anomaly), np.max(anomaly)
+    den = (mx - mn) if (mx - mn) > 1e-8 else 1.0
+    norm = (anomaly - mn) / den
+    return norm
+
+def threshold_anomaly_map(hmap, method="fixed", fixed_val=0.4):
+    if method == "otsu":
+        arr = (hmap * 255).astype(np.uint8)
+        _, binmap = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        return (binmap.astype(np.uint8) // 255).astype(np.uint8)
+    else:
+        binmap = (hmap >= fixed_val).astype(np.uint8)
+        return binmap
+
+def find_regions(binary_map):
+    bin_u8 = (binary_map * 255).astype(np.uint8)
+    contours, _ = cv2.findContours(bin_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    regions = []
+    for cnt in contours:
+        area = float(cv2.contourArea(cnt))
+        M = cv2.moments(cnt)
+        if M.get("m00", 0) != 0:
+            cx = M["m10"] / M["m00"]
+            cy = M["m01"] / M["m00"]
+        else:
+            cx, cy = 0.0, 0.0
+        x, y, w, h = cv2.boundingRect(cnt)
+        regions.append({
+            "area": area,
+            "centroid": (cx, cy),
+            "bbox": (x, y, w, h),
+            "contour": cnt
+        })
+    regions.sort(key=lambda r: r["area"], reverse=True)
+    return regions
+
+def heatmap_to_color(hmap):
+    h_uint8 = np.clip((hmap * 255).astype(np.uint8), 0, 255)
+    colored = cv2.applyColorMap(h_uint8, cv2.COLORMAP_JET)
+    colored_rgb = cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
+    return colored_rgb
+
+def overlay_on_image(img_rgb, heat_rgb, alpha=0.45):
+    img_u8 = img_rgb.astype(np.uint8)
+    heat_u8 = heat_rgb.astype(np.uint8)
+    overlay = cv2.addWeighted(img_u8, 1.0 - alpha, heat_u8, alpha, 0)
+    return overlay
+
+def image_to_bytes(img_rgb, ext=".png"):
+    bgr = cv2.cvtColor(img_rgb.astype(np.uint8), cv2.COLOR_RGB2BGR)
+    success, buf = cv2.imencode(ext, bgr)
+    if not success:
+        raise RuntimeError("Failed to encode image")
+    return buf.tobytes()
+
+# ---- نموذج CNN + بيانات تدريب توليدية ----
+
 def build_cnn(input_shape=(128,128,4)):
     model = models.Sequential([
         layers.Conv2D(16, (3,3), activation='relu', input_shape=input_shape),
@@ -21,22 +160,17 @@ def build_cnn(input_shape=(128,128,4)):
     model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
     return model
 
-# دالة لتحضير بيانات التدريب البسيطة (توليدية)
 def generate_synthetic_training_data(num_samples=100):
-    # صور حقيقية: خرائط تشوه منخفضة
     real_samples = np.random.rand(num_samples//2, 128, 128, 4)*0.3
     real_labels = np.zeros((num_samples//2, 1))
-    # صور مزيفة: خرائط تشوه مرتفعة
     fake_samples = np.random.rand(num_samples//2, 128, 128, 4)*0.7 + 0.3
     fake_labels = np.ones((num_samples//2, 1))
     X = np.concatenate([real_samples, fake_samples], axis=0)
     y = np.concatenate([real_labels, fake_labels], axis=0)
-    # خلط البيانات
     idx = np.arange(num_samples)
     np.random.shuffle(idx)
     return X[idx], y[idx]
 
-# دالة لتحويل خرائط التحليل إلى مدخلات النموذج (4 قنوات)
 def prepare_cnn_input(ela, edges, lbp, noise):
     from cv2 import resize
     def norm_resize(a):
@@ -49,7 +183,6 @@ def prepare_cnn_input(ela, edges, lbp, noise):
     stacked = np.stack([ela_r, edges_r, lbp_r, noise_r], axis=-1)
     return np.expand_dims(stacked, axis=0).astype(np.float32)
 
-# تحميل أو بناء وتدريب النموذج مرة واحدة
 @st.cache_resource
 def get_trained_cnn():
     model = build_cnn()
@@ -57,7 +190,7 @@ def get_trained_cnn():
     model.fit(X_train, y_train, epochs=10, batch_size=16, verbose=0)
     return model
 
-# --- واجهة المستخدم والإعدادات تبقى كما هي ---
+# ---- واجهة المستخدم ----
 
 st.title("🔎 Image Forgery Detection — Full App with CNN Enhancement")
 st.write("Upload an image and the app computes analytical maps and also uses a simple CNN model for improved forgery detection.")
@@ -123,7 +256,6 @@ if uploaded is not None and run_btn:
     decision_threshold = fixed_threshold
     decision = "Fake" if manipulation_score >= decision_threshold else "Real"
 
-    # استخدم نموذج CNN للتوقع
     model = get_trained_cnn()
     cnn_input = prepare_cnn_input(ela_n, edges_n, lbp_n, noise_n)
     cnn_pred = model.predict(cnn_input)[0][0]
@@ -166,4 +298,3 @@ if uploaded is not None and run_btn:
 
 else:
     st.info("Upload an image and click 'Run analysis' to start.")
-
