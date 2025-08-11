@@ -13,7 +13,6 @@ def load_image_from_upload(ufile):
     img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
     if img_bgr is None:
         raise ValueError("Cannot decode image")
-    # If 4 channels (RGBA), convert to RGB dropping alpha
     if img_bgr.ndim == 2:
         img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
     if img_bgr.shape[2] == 4:
@@ -113,7 +112,7 @@ def overlay_on_image(img_rgb, heat_rgb, alpha=0.45):
     overlay = cv2.addWeighted(img_u8, 1.0 - alpha, heat_u8, alpha, 0)
     return overlay
 
-def threshold_anomaly_map(hmap, method="fixed", fixed_val=0.4):
+def threshold_anomaly_map(hmap, method="fixed", fixed_val=0.6):
     if method == "otsu":
         arr = (hmap * 255).astype(np.uint8)
         _, binmap = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -163,7 +162,7 @@ with st.sidebar:
     ela_quality = st.slider("ELA JPEG quality (recompress)", 50, 95, 90)
     dct_low = st.slider("DCT low-frequency block size (smaller → more HF)", 4, 128, 16)
     threshold_method = st.selectbox("Binary threshold method", ["fixed", "otsu"])
-    fixed_threshold = st.slider("Fixed heatmap threshold (used if method=fixed)", 0.01, 0.9, 0.35, step=0.01)
+    fixed_threshold = st.slider("Fixed heatmap threshold (used if method=fixed)", 0.01, 0.9, 0.6, step=0.01)  # default 0.6
     overlay_alpha = st.slider("Overlay alpha", 0.05, 0.9, 0.45, step=0.05)
     min_region_area = st.number_input("Min region area (px) to report", 0, 1000000, 20, step=10)
 
@@ -247,11 +246,10 @@ if uploaded is not None and run_btn:
 
     st.markdown("---")
     st.subheader("Final Result")
-    st.markdown(f"- Prediction: {decision}")
-    st.markdown(f"- Confidence (manipulation score): {confidence_score:.2%} (avg heatmap intensity)")
+    st.markdown(f"- Prediction: **{decision}**")
+    st.markdown(f"- Confidence (manipulation score): **{confidence_score:.2%}** (avg heatmap intensity)")
     st.caption("⚠️ Note: This analytic detector flags anomalous regions — for production you should train a supervised classifier (CNN) on labeled real/fake data to get higher reliability.")
 
-    # إضافة رسالة واضحة للحكم النهائي
     st.markdown("---")
     st.header("🛑 Final Authenticity Check")
     if decision == "Fake":
@@ -271,4 +269,3 @@ if uploaded is not None and run_btn:
 
 else:
     st.info("Upload an image and click 'Run analysis' to start. If you want a *self-contained* version (from raw image → prediction) I can bundle everything into one file that also includes optional training scaffolding.")
-
