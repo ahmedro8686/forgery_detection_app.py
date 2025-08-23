@@ -4,6 +4,7 @@ Image Forgery Detection App (Python + Streamlit)
 
 This Python + Streamlit application detects potential forged or manipulated regions in digital images by combining illumination analysis, edge detection, texture patterns (LBP), noise frequency mapping (DCT), and statistical anomaly detection (z-score). It integrates multiple advanced computer vision techniques to highlight suspicious areas and visualize anomalies interactively and intuitively.
 
+🔗 Live App: Run the Image Forgery Detection App
 🛠 Features
 
     Illumination Map Analysis – Detects unnatural lighting variations.
