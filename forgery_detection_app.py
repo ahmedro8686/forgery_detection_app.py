@@ -162,7 +162,7 @@ with st.sidebar:
     ela_quality = st.slider("ELA JPEG quality (recompress)", 50, 95, 90)
     dct_low = st.slider("DCT low-frequency block size (smaller → more HF)", 4, 128, 16)
     threshold_method = st.selectbox("Binary threshold method", ["fixed", "otsu"])
-    fixed_threshold = st.slider("Fixed heatmap threshold (used if method=fixed)", 0.01, 0.9, 0.6, step=0.01)  # default 0.6
+    fixed_threshold = st.slider("Fixed heatmap threshold (used if method=fixed)", 0.01, 0.9, 0.6, step=0.01)
     overlay_alpha = st.slider("Overlay alpha", 0.05, 0.9, 0.45, step=0.05)
     min_region_area = st.number_input("Min region area (px) to report", 0, 1000000, 20, step=10)
 
@@ -191,6 +191,7 @@ if uploaded is not None and run_btn:
         if mx - mn < 1e-8:
             return np.zeros_like(a)
         return (a - mn) / (mx - mn)
+
     ela_n = norm01(ela)
     edges_n = norm01(edges)
     lbp_n = norm01(lbp)
@@ -253,9 +254,9 @@ if uploaded is not None and run_btn:
     st.markdown("---")
     st.header("🛑 Final Authenticity Check")
     if decision == "Fake":
-        st.error("⚠️ هذه الصورة **مُزيفة**")
+        st.error("⚠️ This image is **Fake**")
     else:
-        st.success("✅ هذه الصورة **حقيقية**")
+        st.success("✅ This image is **Real**")
 
     img_bytes = image_to_bytes(overlay_annot, ext=".png")
     st.download_button("⬇️ Download overlay (PNG)", data=img_bytes, file_name="anomaly_overlay.png", mime="image/png")
